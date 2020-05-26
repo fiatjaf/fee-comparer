@@ -1,7 +1,7 @@
 import psycopg2
 
 from .globals import POSTGRES_URL
-from .inspecttransactions import inspecttransactions
+from .run_day import run_day
 
 
 def main():
@@ -9,7 +9,7 @@ def main():
         conn.autocommit = True
 
         with conn.cursor() as db:
-            inspecttransactions(db)
+            run_day(db)
 
 
 main()
