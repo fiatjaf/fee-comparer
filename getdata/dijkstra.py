@@ -1,10 +1,11 @@
 import collections
 import requests
 import heapq
+import math
 
 from .globals import SPARK_TOKEN, SPARK_URL
 
-Route = collections.namedtuple("Route", "price path")
+Route = collections.namedtuple("Route", "price chan_fee_abs chan_fee_rel path")
 
 
 class Heap(object):
@@ -28,7 +29,10 @@ class Graph(object):
         # Map each node to a set of nodes connected to it
         self._neighbors = collections.defaultdict(set)
 
-    def neighbors(self, node):
+    def neighbors(self, node, price):
+        for v in self._neighbors[node]:
+            if v[1] * 0.99 > price:
+                yield v
         yield from self._neighbors[node]
 
     @classmethod
@@ -44,6 +48,7 @@ class Graph(object):
         for channel in r.json()["channels"]:
             chandef = (
                 channel["destination"],
+                channel["satoshis"],
                 channel["base_fee_millisatoshi"],
                 channel["fee_per_millionth"],
             )
@@ -53,17 +58,25 @@ class Graph(object):
 
     def dijkstra(self, origin, destination, msatoshi):
         routes = Heap()
-        for neighbor, base, ppm in self.neighbors(origin):
-            chan_price = base + ppm * msatoshi / 1000000
-            price = msatoshi + chan_price
-            routes.push(Route(price=price, path=[origin, neighbor]))
+        for neighbor, _, base, ppm in self.neighbors(origin, msatoshi):
+            chan_fee_abs = base
+            chan_fee_rel = ppm * msatoshi / 1000000
+            price = msatoshi + chan_fee_abs + chan_fee_rel
+            routes.push(
+                Route(
+                    price=price,
+                    chan_fee_abs=chan_fee_abs,
+                    chan_fee_rel=chan_fee_rel,
+                    path=[origin, neighbor],
+                )
+            )
 
         visited = set()
         visited.add(origin)
 
         while routes:
             # find the nearest yet-to-visit node
-            price, path = routes.pop()
+            price, chan_fee_abs, chan_fee_rel, path = routes.pop()
 
             node = path[-1]
             if node in visited:
@@ -71,17 +84,27 @@ class Graph(object):
 
             # we have arrived! wo-hoo!
             if node == destination:
-                return price, path
+                return price, chan_fee_abs, chan_fee_rel, path
 
             # tentative distances to all the unvisited neighbors
-            for neighbor, base, ppm in self.neighbors(node):
+            for neighbor, _, base, ppm in self.neighbors(node, price):
                 if neighbor not in visited:
                     # Total spent so far plus the price of getting there
-                    chan_price = base + ppm * price / 1000000
-                    new_price = price + chan_price
+                    cur_chan_fee_abs = base
+                    cur_chan_fee_rel = ppm * price / 1000000
+                    new_price = price + cur_chan_fee_abs + cur_chan_fee_rel
+                    new_chan_fee_abs = chan_fee_abs + cur_chan_fee_abs
+                    new_chan_fee_rel = chan_fee_rel + cur_chan_fee_rel
                     new_path = path + [neighbor]
-                    routes.push(Route(new_price, new_path))
+                    routes.push(
+                        Route(
+                            price=new_price,
+                            chan_fee_abs=new_chan_fee_abs,
+                            chan_fee_rel=new_chan_fee_rel,
+                            path=new_path,
+                        )
+                    )
 
             visited.add(node)
 
-        return float("infinity"), None
+        return math.inf, math.inf, math.inf, None

@@ -2,23 +2,13 @@ import random
 import datetime
 import requests
 import math
-from multiprocessing import Pool, Manager
+from multiprocessing import Pool
 from statistics import quantiles
 from pprint import pprint as pp
 
 from .globals import bitcoin
 from .dijkstra import Graph
-from .helpers import get_txo_amount, BTC, normalize_value
-
-# get a list of nodes
-r = requests.get(
-    "https://ln.bigsun.xyz/api/nodes?select=pubkey&order=openchannels.desc",
-    headers={"Range": "250-1250"},
-)
-nodes = [item["pubkey"] for item in r.json()]
-
-# load the channel graph
-graph = Graph.load()
+from .helpers import get_txo_amount, BTC
 
 
 def run_day(db):
@@ -35,6 +25,31 @@ def run_day(db):
     print(
         f"today: {datetime.date.today()}, tip: {tip}, last day: {last_day}, getting data for day: {current_day}, scanning since: {scan_since}"
     )
+
+    # get a list of nodes
+    r = requests.get(
+        "https://ln.bigsun.xyz/api/nodes?select=pubkey&order=openchannels.desc",
+        headers={"Range": "250-1250"},
+    )
+    global nodes
+    nodes = [item["pubkey"] for item in r.json()]
+
+    # load the channel graph
+    global graph
+    graph = Graph.load()
+
+    # get a generic function to estimate fee
+    global estimate_lightning_fee
+    estimate_lightning_fee = get_fee_estimator()
+
+    for i in range(1, 8):
+        sat = 4 * 10 ** i
+        print(
+            "estimate:",
+            sat,
+            estimate_lightning_fee(sat),
+            f"{int(100 * estimate_lightning_fee(sat) / sat)}%",
+        )
 
     # get the list of blocks we're interested in
     blocks_for_the_day = []
@@ -56,16 +71,12 @@ def run_day(db):
     print(
         f"found {len(blocks_for_the_day)} blocks from {blocks_for_the_day[0]} to {blocks_for_the_day[-1]}"
     )
-    with Manager() as manager:
-        global ln_fee_cache
-        ln_fee_cache = manager.dict()
+    with Pool(processes=12) as pool:
+        results = pool.imap_unordered(run_block, blocks_for_the_day)
 
-        with Pool(processes=12) as pool:
-            results = pool.imap_unordered(run_block, blocks_for_the_day)
-
-            for total, overpaid in results:
-                total_payments += total
-                overpaid_payments += overpaid
+        for total, overpaid in results:
+            total_payments += total
+            overpaid_payments += overpaid
 
     # reached the end, calculate values for the day
     pp(
@@ -120,7 +131,7 @@ def run_block(block_hash):
     overpaid_payments = []
 
     block_data = bitcoin.getblock(block_hash, 2)
-    print(block_data["height"])
+    print("starting block", block_data["height"])
 
     txs = block_data["tx"][1:]  # exclude coinbase
     for tx in txs:
@@ -160,41 +171,9 @@ def run_block(block_hash):
         # each vout is treated as a different payment, total fee is splitted
         for vout in vouts:
             sat = int(vout["value"] * BTC)
-            sat_normalized = normalize_value(sat)
 
             total_payments.append(sat)
-
-            ln_fee = None
-
-            # check cache
-            ln_fee = ln_fee_cache.get(sat_normalized)
-            if not ln_fee:
-                # estimate lightning fee by calculating random routes to 3 destinations
-                ln_fees = []
-                for i in range(3):
-                    source = random.choice(nodes)
-                    target = random.choice(nodes)
-                    price, _ = graph.dijkstra(source, target, sat_normalized * 1000)
-                    if price == math.inf or price == 0:
-                        continue
-
-                    fee_msat = int(price - sat_normalized * 1000)
-
-                    print(f"    estimated_fee ({sat_normalized}): {fee_msat}")
-                    ln_fees.append(fee_msat)
-
-                if not ln_fees:
-                    # didn't find any route, so forget about this payment
-                    print("    no route: ", sat, chain_fee)
-                    ln_fee_cache[sat_normalized] = False
-                    continue
-
-                ln_fee_msat = max(ln_fees)  # select the most expensive route
-                ln_fee = int(ln_fee_msat / 1000)
-                ln_fee_cache[sat_normalized] = ln_fee
-
-            # denormalize
-            ln_fee = ln_fee * sat / sat_normalized
+            ln_fee = estimate_lightning_fee(sat)
 
             print(
                 block_data["height"],
@@ -204,7 +183,45 @@ def run_block(block_hash):
                 ln_fee,
             )
 
-            if ln_fee < chain_fee:
+            if ln_fee and ln_fee < chain_fee:
                 overpaid_payments.append((sat, chain_fee, ln_fee))
 
     return total_payments, overpaid_payments
+
+
+def get_fee_estimator():
+    # estimate multiple fees considering large payments, take the greatest of them
+    # segregate absolute and relative fee
+    # to build a function we can reuse with any quantity
+
+    estimator_limits = [4 * 10 ** i for i in range(1, 8)]
+    fee_params = []
+
+    for limit in estimator_limits:
+        absolute_fees = []
+        relative_fees = []
+
+        for i in range(50):
+            source = random.choice(nodes)
+            target = random.choice(nodes)
+            price, absolute_fee, relative_fee, _ = graph.dijkstra(source, target, limit)
+            if price == math.inf or price == 0:
+                # no route found
+                continue
+
+            absolute_fees.append(absolute_fee)
+            relative_fees.append(relative_fee)
+
+        fee_params.append((max(absolute_fees), max(relative_fees) / limit))
+
+    for limit, (absolute_fee, relative_fee) in zip(estimator_limits, fee_params):
+        print(f"estimate(<= {limit}): {absolute_fee} + {relative_fee} * sat")
+
+    def estimate(sat):
+        for limit, (absolute_fee, relative_fee) in zip(estimator_limits, fee_params):
+            if sat <= limit:
+                return absolute_fee + relative_fee * sat
+        else:
+            return None
+
+    return estimate
