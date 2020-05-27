@@ -201,7 +201,7 @@ def get_fee_estimator():
         absolute_fees = []
         relative_fees = []
 
-        for i in range(50):
+        for i in range(20):
             source = random.choice(nodes)
             target = random.choice(nodes)
             price, absolute_fee, relative_fee, _ = graph.dijkstra(source, target, limit)
