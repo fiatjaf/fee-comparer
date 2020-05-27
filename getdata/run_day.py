@@ -1,11 +1,13 @@
 import random
 import datetime
 import requests
+import math
 from multiprocessing import Pool, Manager
 from statistics import quantiles
 from pprint import pprint as pp
 
-from .globals import bitcoin, SPARK_URL, SPARK_TOKEN
+from .globals import bitcoin
+from .dijkstra import Graph
 from .helpers import get_txo_amount, BTC, normalize_value
 
 # get a list of nodes
@@ -14,6 +16,9 @@ r = requests.get(
     headers={"Range": "250-1250"},
 )
 nodes = [item["pubkey"] for item in r.json()]
+
+# load the channel graph
+graph = Graph.load()
 
 
 def run_day(db):
@@ -64,17 +69,19 @@ def run_day(db):
 
     # reached the end, calculate values for the day
     pp(
-        current_day,
-        len(total_payments),
-        sum(total_payments),
-        len(overpaid_payments),
-        sum([p[0] for p in overpaid_payments]),
-        sum([p[1] for p in overpaid_payments]),
-        sum([p[2] for p in overpaid_payments]),
-        quantiles([p[0] for p in overpaid_payments], n=10),
-        quantiles([p[1] for p in overpaid_payments], n=10),
-        quantiles([p[2] for p in overpaid_payments], n=10),
-        quantiles([p[1] - p[2] for p in overpaid_payments], n=10),
+        (
+            current_day,
+            len(total_payments),
+            sum(total_payments),
+            len(overpaid_payments),
+            sum([p[0] for p in overpaid_payments]),
+            sum([p[1] for p in overpaid_payments]),
+            sum([p[2] for p in overpaid_payments]),
+            quantiles([p[0] for p in overpaid_payments], n=10),
+            quantiles([p[1] for p in overpaid_payments], n=10),
+            quantiles([p[2] for p in overpaid_payments], n=10),
+            quantiles([p[1] - p[2] for p in overpaid_payments], n=10),
+        )
     )
 
     db.execute(
@@ -83,7 +90,8 @@ def run_day(db):
         (day,
          total_n, total_amount, overpaid_n, overpaid_amount,
          overpaid_chain_fee, overpaid_ln_fee,
-         overpaid_quant_amount, overpaid_quant_chain_fee, overpaid_quant_ln_fee, overpaid_quant_diff)
+         overpaid_quant_amount, overpaid_quant_chain_fee, overpaid_quant_ln_fee, overpaid_quant_diff
+        )
       VALUES (
         $1,
         $2, $3, $4, $5,
@@ -163,35 +171,17 @@ def run_block(block_hash):
             if not ln_fee:
                 # estimate lightning fee by calculating random routes to 3 destinations
                 ln_fees = []
-                for i in range(7):
+                for i in range(3):
+                    source = random.choice(nodes)
                     target = random.choice(nodes)
-                    r = requests.post(
-                        SPARK_URL,
-                        headers={"X-Access": SPARK_TOKEN},
-                        json={
-                            "method": "getroute",
-                            "params": {
-                                "id": target,
-                                "msatoshi": f"{sat_normalized}sat",
-                                "riskfactor": 5,
-                            },
-                        },
-                        verify=False,
-                    )
-                    if not r.ok:
+                    price, _ = graph.dijkstra(source, target, sat_normalized * 1000)
+                    if price == math.inf or price == 0:
                         continue
 
-                    fee_msat = r.json()["route"][0]["msatoshi"] - (
-                        sat_normalized * 1000
-                    )
-                    if fee_msat == 0:
-                        continue
+                    fee_msat = int(price - sat_normalized * 1000)
 
                     print(f"    estimated_fee ({sat_normalized}): {fee_msat}")
                     ln_fees.append(fee_msat)
-
-                    if len(ln_fees) >= 3:
-                        break
 
                 if not ln_fees:
                     # didn't find any route, so forget about this payment
@@ -199,7 +189,7 @@ def run_block(block_hash):
                     ln_fee_cache[sat_normalized] = False
                     continue
 
-                ln_fee_msat = max(ln_fees)
+                ln_fee_msat = max(ln_fees)  # select the most expensive route
                 ln_fee = int(ln_fee_msat / 1000)
                 ln_fee_cache[sat_normalized] = ln_fee
 
