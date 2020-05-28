@@ -104,10 +104,10 @@ def run_day(db):
          overpaid_quant_amount, overpaid_quant_chain_fee, overpaid_quant_ln_fee, overpaid_quant_diff
         )
       VALUES (
-        $1,
-        $2, $3, $4, $5,
-        $6, $7,
-        $8, $9, $10
+        %s,
+        %s, %s, %s, %s,
+        %s, %s,
+        %s, %s, %s, %s
       )
     """,
         (

@@ -62,7 +62,7 @@ class Graph(object):
         routes = Heap()
         for neighbor, _, base, ppm in self.neighbors(origin, msatoshi):
             chan_fee_abs = base
-            chan_fee_rel = ppm * msatoshi / 1000
+            chan_fee_rel = ppm * msatoshi / 1000000000
             price = msatoshi + chan_fee_abs + chan_fee_rel
             routes.push(
                 Route(
@@ -93,7 +93,7 @@ class Graph(object):
                 if neighbor not in visited:
                     # Total spent so far plus the price of getting there
                     cur_chan_fee_abs = base
-                    cur_chan_fee_rel = ppm * price / 1000
+                    cur_chan_fee_rel = ppm * price / 1000000000
                     new_price = price + cur_chan_fee_abs + cur_chan_fee_rel
                     new_chan_fee_abs = chan_fee_abs + cur_chan_fee_abs
                     new_chan_fee_rel = chan_fee_rel + cur_chan_fee_rel
