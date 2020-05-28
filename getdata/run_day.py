@@ -13,12 +13,17 @@ from .helpers import get_txo_amount, BTC
 
 def run_day(db):
     # discover the day we're in and which blocks we must scan
+    today = datetime.date.today()
     db.execute("SELECT max(day) FROM days")
     (last_day,) = db.fetchone()
     if not last_day:
         last_day = datetime.date.today() - datetime.timedelta(days=2)
     current_day = last_day + datetime.timedelta(days=1)
-    blocks_to_rewind = (datetime.date.today() - current_day).days * 200 + 144
+    if current_day == today:
+        print("the last scanned day was yesterday, so we must wait until tomorrow.")
+        return
+
+    blocks_to_rewind = (today - current_day).days * 200 + 144
     tip = bitcoin.getblockchaininfo()["headers"]
     scan_since = tip - blocks_to_rewind
 
