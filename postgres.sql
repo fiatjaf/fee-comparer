@@ -1,5 +1,6 @@
 CREATE TABLE days (
   day date PRIMARY KEY,
+  last_block int NOT NULL,
   total_n int NOT NULL, -- total payments considered (excluding change)
   total_amount numeric(15) NOT NULL,
   overpaid_n int NOT NULL, -- payments that could have been cheaper on lightning

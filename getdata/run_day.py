@@ -58,6 +58,7 @@ def run_day(db):
 
     # get the list of blocks we're interested in
     blocks_for_the_day = []
+    last_block = 0
     for block_number in range(scan_since, tip):
         block_hash = bitcoin.getblockhash(block_number)
         block = bitcoin.getblock(block_hash)
@@ -65,6 +66,7 @@ def run_day(db):
         if block_date < current_day:
             continue
         if block_date > current_day:
+            last_block = block_number - 1
             break
 
         # here we know we're in the correct day
@@ -87,6 +89,7 @@ def run_day(db):
     pp(
         (
             current_day,
+            last_block,
             len(total_payments),
             sum(total_payments),
             len(overpaid_payments),
@@ -103,13 +106,13 @@ def run_day(db):
     db.execute(
         """
       INSERT INTO days
-        (day,
+        (day, last_block,
          total_n, total_amount, overpaid_n, overpaid_amount,
          overpaid_chain_fee, overpaid_ln_fee,
          overpaid_quant_amount, overpaid_quant_chain_fee, overpaid_quant_ln_fee, overpaid_quant_diff
         )
       VALUES (
-        %s,
+        %s, %s,
         %s, %s, %s, %s,
         %s, %s,
         %s, %s, %s, %s
@@ -117,6 +120,7 @@ def run_day(db):
     """,
         (
             current_day,
+            last_block,
             len(total_payments),
             sum(total_payments),
             len(overpaid_payments),
